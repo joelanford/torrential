@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 
 	atorrent "github.com/anacrolix/torrent"
@@ -54,7 +55,7 @@ func NewService(conf *Config) (*Service, error) {
 			return nil, errors.Wrap(err, "could not load cache")
 		}
 		for _, spec := range specs {
-			if _, _, err := svc.client.AddTorrentSpec(&spec); err != nil {
+			if _, err := svc.addTorrentSpec(&spec); err != nil {
 				return nil, err
 			}
 		}
@@ -137,8 +138,18 @@ func (svc *Service) Drop(infoHash string, deleteFiles bool) error {
 		}
 	}
 	if deleteFiles {
+		directories := make(map[string]struct{})
 		for _, f := range t.Files() {
+			dirs := strings.Split(f.Path(), string(os.PathSeparator))
+			if len(dirs) > 1 {
+				directories[dirs[0]] = struct{}{}
+			}
 			if err := os.RemoveAll(f.Path()); err != nil {
+				return errors.Wrap(deleteErr{err}, "could not delete torrent files")
+			}
+		}
+		for d := range directories {
+			if err := os.RemoveAll(d); err != nil {
 				return errors.Wrap(deleteErr{err}, "could not delete torrent files")
 			}
 		}
