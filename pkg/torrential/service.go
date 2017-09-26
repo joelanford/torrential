@@ -166,8 +166,10 @@ func (svc *Service) addTorrentSpec(spec *atorrent.TorrentSpec) (*atorrent.Torren
 		return nil, errors.Wrap(addTorrentErr{err}, "could not add torrent")
 	}
 
+	eventer := NewEventer(t, SeedRatio(svc.defaultSeedRatio))
+
 	svc.eventerMu.Lock()
-	svc.eventers[spec.InfoHash.String()] = NewEventer(t, SeedRatio(svc.defaultSeedRatio))
+	svc.eventers[spec.InfoHash.String()] = eventer
 	svc.eventerMu.Unlock()
 
 	if svc.cache != nil {
@@ -177,8 +179,8 @@ func (svc *Service) addTorrentSpec(spec *atorrent.TorrentSpec) (*atorrent.Torren
 	}
 	go func() {
 		select {
-		case <-t.Closed():
-		case <-t.GotInfo():
+		case <-eventer.Closed():
+		case <-eventer.GotInfo():
 			t.DownloadAll()
 		}
 	}()

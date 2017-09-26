@@ -14,12 +14,19 @@ import (
 
 type handler struct {
 	ts       *Service
-	upgrader websocket.Upgrader
+	upgrader *websocket.Upgrader
 }
 
 func NewHTTPHandler(svc *Service) http.Handler {
 	r := mux.NewRouter()
-	h := handler{ts: svc}
+	h := handler{
+		ts: svc,
+		upgrader: &websocket.Upgrader{
+			Error: func(w http.ResponseWriter, r *http.Request, code int, err error) {
+				encodeError(w, code, err)
+			},
+		},
+	}
 
 	r.Path("/torrents").Methods("HEAD").HandlerFunc(h.headTorrents)
 	r.Path("/torrents").Methods("GET").HandlerFunc(h.getTorrents)
@@ -156,7 +163,7 @@ func (h *handler) getTorrentEvents(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		encodeError(w, httpStatus(err), err)
+		// err is handled by h.upgrader.Error, which calls encodeError
 		return
 	}
 	defer ws.Close()

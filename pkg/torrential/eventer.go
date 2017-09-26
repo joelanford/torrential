@@ -10,13 +10,14 @@ import (
 type Eventer struct {
 	seedRatio float64
 
-	torrent      *atorrent.Torrent
+	torrent *atorrent.Torrent
+
 	added        chan struct{}
-	gotInfo      <-chan struct{}
+	gotInfo      chan struct{}
 	fileDone     map[string]chan struct{}
 	downloadDone chan struct{}
 	seedingDone  chan struct{}
-	closed       <-chan struct{}
+	closed       chan struct{}
 
 	fdMutex    sync.RWMutex
 	filesReady chan struct{}
@@ -28,11 +29,11 @@ func NewEventer(t *atorrent.Torrent, options ...EventerOptionFunc) *Eventer {
 	e := Eventer{
 		torrent:      t,
 		added:        make(chan struct{}),
-		gotInfo:      t.GotInfo(),
+		gotInfo:      make(chan struct{}),
 		fileDone:     make(map[string]chan struct{}),
 		downloadDone: make(chan struct{}),
 		seedingDone:  make(chan struct{}),
-		closed:       t.Closed(),
+		closed:       make(chan struct{}),
 
 		filesReady: make(chan struct{}),
 	}
@@ -133,7 +134,7 @@ func (e *Eventer) Events() <-chan Event {
 					go func(f atorrent.File) {
 						defer wg.Done()
 						select {
-						case <-e.torrent.Closed():
+						case <-e.Closed():
 							return
 						case <-fileDone:
 							events <- Event{Type: EventFileDone, Torrent: e.torrent, File: &f}
@@ -180,6 +181,11 @@ func (e *Eventer) Events() <-chan Event {
 }
 
 func (e *Eventer) run() {
+	// Immediately subscribe to piece changes so we won't miss them while we
+	// check file completion and setup state for incomplete files.
+	sub := e.torrent.SubscribePieceStateChanges()
+	defer sub.Close()
+
 	// Closed the added channel immediately. The fact that we know about this
 	// torrent means it has been added.
 	close(e.added)
@@ -190,79 +196,138 @@ func (e *Eventer) run() {
 	// channels.
 	select {
 	case <-e.torrent.GotInfo():
+		close(e.gotInfo)
 	case <-e.torrent.Closed():
+		close(e.closed)
 		return
 	}
 
-	// Immediately subscribe to piece changes to we miss as few as possible
-	// while we check file completion and setup state for incomplete files.
-	sub := e.torrent.SubscribePieceStateChanges()
-	defer sub.Close()
+	// For each file, create a set of incomplete pieces for the file
+	// For each piece, create a set of incomplete files for the piece
+	//
+	// When we get a piece update, we'll use these maps to quickly check to see
+	// if files have been completed.
+	incompleteFilePieces := make(map[string]map[int]struct{})
+	incompletePieceFiles := make(map[int]map[string]struct{})
 
-	// For each file, setup a map of incomplete pieces. Once a file map of
-	// incomplete pieces is empty, we'll know the file is complete. We also
-	// create our fileDone channel for each file.
-	incompleteFiles := make(map[string]map[int]struct{})
-	for _, f := range e.torrent.Files() {
-		fileDone := make(chan struct{})
-		complete := true
-
-		incompleteFiles[f.DisplayPath()] = make(map[int]struct{})
-		for i, piece := range f.State() {
-			if !piece.Complete {
-				complete = false
-				incompleteFiles[f.DisplayPath()][int(f.Offset())+i] = struct{}{}
-			}
-		}
-
-		if complete {
-			delete(incompleteFiles, f.DisplayPath())
-			close(fileDone)
-		}
-
+	// For each file, setup a new fileDone channel and a new map to store a set
+	// of incomplete pieces
+	for _, file := range e.torrent.Files() {
 		e.fdMutex.Lock()
-		e.fileDone[f.Path()] = fileDone
+		e.fileDone[file.Path()] = make(chan struct{})
 		e.fdMutex.Unlock()
+
+		incompleteFilePieces[file.Path()] = make(map[int]struct{})
 	}
 
+	// Now that all of the fileDone channels have been created, close the
+	// filesReady channel to initialize the processing to send FileDone events
+	// in the Events() function
 	close(e.filesReady)
 
+	// Iterate through each piece, setting up the incomplete file and piece maps
+	fileIndex := 0
+	for i := 0; i < e.torrent.NumPieces(); i++ {
+		piece := e.torrent.Piece(i)
+		pieceState := e.torrent.PieceState(i)
+
+		if piece.Info().Length() == 0 || pieceState.Complete {
+			continue
+		}
+
+		incompletePieceFiles[i] = make(map[string]struct{})
+
+		pieceBegin := piece.Info().Offset()
+		pieceEnd := pieceBegin + piece.Info().Length() - 1
+
+		for j, file := range e.torrent.Files()[fileIndex:] {
+			if file.Length() == 0 {
+				continue
+			}
+
+			fileBegin := file.Offset()
+			fileEnd := fileBegin + file.Length() - 1
+
+			if pieceEnd >= fileBegin && fileEnd >= pieceBegin {
+				// This file has bytes in the piece. Add it to the maps and
+				// check the same file in the next piece
+				incompletePieceFiles[i][file.Path()] = struct{}{}
+				incompleteFilePieces[file.Path()][i] = struct{}{}
+				fileIndex = j
+			}
+		}
+	}
+
+	// Check for files that are already complete
+	for file, pieces := range incompleteFilePieces {
+		// If the set of incomplete pieces for a file is empty, the file is
+		// complete, so close the fileDone channel for the file and delete the
+		// file from the filePieces set
+		if len(pieces) == 0 {
+			e.fdMutex.RLock()
+			close(e.fileDone[file])
+			e.fdMutex.RUnlock()
+
+			delete(incompleteFilePieces, file)
+			for p := range pieces {
+				delete(incompletePieceFiles[p], file)
+			}
+		}
+	}
+
+	// If there are no bytes missing, it means all the files and the entire
+	// torrent are done downloading, so short circuit the rest of the fileDone
+	// and downloadDone processing.
+	//
+	// Otherwise, monitor the piece state changes for completed pieces.
 	if e.torrent.BytesMissing() == 0 {
+		for file, pieces := range incompleteFilePieces {
+			e.fdMutex.RLock()
+			close(e.fileDone[file])
+			e.fdMutex.RUnlock()
+
+			delete(incompleteFilePieces, file)
+			for p := range pieces {
+				delete(incompletePieceFiles[p], file)
+			}
+		}
 		close(e.downloadDone)
 	} else {
 		for {
 			piece, open := <-sub.Values
 			if !open {
-				// If sub.Values is closed, the torrent
-				// has been closed, so just return
+				// If sub.Values is closed, the torrent has been closed, so
+				// close the e.closed channel and return
+				close(e.closed)
 				return
 			}
 
 			psc := piece.(atorrent.PieceStateChange)
 
 			// If the piece is complete:
-			//   find the file it's in
-			//   remove the piece from the file's incomplete piece map
-			//   close the fileDone channel if the incomplete piece map is empty
-			//   close the downloadDone channel if no more bytes are missing
+			//   1. find the set of files it contains data for
+			//   2. for each of those files, remove the piece from that file's
+			//      set of incomplete pieces
+			//   3. if the set of pieces is now empty, the file is down
+			//      downloading, so close its fileDone channel and remove the
+			//      file from both incomplete maps
+			//   4. if no bytes are missing from the torrent, close the
+			//      downloadDone channel and break the loop
 			if psc.Complete {
-				var file *atorrent.File
-				for _, f := range e.torrent.Files() {
-					i := int64(psc.Index)
-					if i >= f.Offset() && i < f.Offset()+f.Length() {
-						file = &f
-					}
-				}
-				if file != nil {
-					delete(incompleteFiles[file.Path()], psc.Index)
-					if len(incompleteFiles[file.Path()]) == 0 {
-						delete(incompleteFiles, file.Path())
+				files := incompletePieceFiles[psc.Index]
 
+				for f := range files {
+					delete(incompleteFilePieces[f], psc.Index)
+					if len(incompleteFilePieces[f]) == 0 {
 						e.fdMutex.RLock()
-						close(e.fileDone[file.Path()])
+						close(e.fileDone[f])
 						e.fdMutex.RUnlock()
+
+						delete(incompleteFilePieces, f)
+						delete(incompletePieceFiles[psc.Index], f)
 					}
 				}
+
 				if e.torrent.BytesMissing() == 0 {
 					close(e.downloadDone)
 					break
@@ -281,8 +346,10 @@ func (e *Eventer) run() {
 	} else {
 		for {
 			select {
-			// If the torrent is closed before the seed ratio is met, return
+			// If the torrent is closed before the seed ratio is met, close the
+			// e.closed channel and return
 			case <-e.torrent.Closed():
+				close(e.closed)
 				return
 			case <-time.After(e.seedWait()):
 				if float64(e.torrent.Stats().DataBytesWritten)/float64(e.torrent.BytesCompleted()) >= e.seedRatio {
@@ -292,6 +359,12 @@ func (e *Eventer) run() {
 			}
 		}
 	}
+
+	// The only event left is the torrent close event. Wait for that and close
+	// the e.closed channel before returning.
+	<-e.torrent.Closed()
+	close(e.closed)
+	return
 }
 
 // seedWait returns a duration inversely propotional to the seed ratio itself,
