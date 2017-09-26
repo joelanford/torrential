@@ -10,7 +10,15 @@ import (
 func main() {
 	svc, err := torrential.NewService(&torrential.Config{
 		Cache:     torrential.NewFileCache(".torrent"),
-		SeedRatio: 1.0,
+		SeedRatio: 0.00001,
+		Webhooks: torrential.Webhooks{
+			Added:        "http://localhost:8081/webhook/added",
+			GotInfo:      "http://localhost:8081/webhook/gotInfo",
+			FileDone:     "http://localhost:8081/webhook/fileDone",
+			DownloadDone: "http://localhost:8081/webhook/downloadDone",
+			SeedingDone:  "http://localhost:8081/webhook/seedingDone",
+			Closed:       "http://localhost:8081/webhook/closed",
+		},
 	})
 	if err != nil {
 		log.Fatal(err)

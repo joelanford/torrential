@@ -221,7 +221,7 @@ type torrentsResult struct {
 }
 
 type eventResult struct {
-	Event event `json:"events"`
+	Event event `json:"event"`
 }
 
 type errorResult struct {
