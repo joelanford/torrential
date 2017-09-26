@@ -344,6 +344,7 @@ func (e *Eventer) run() {
 	if e.seedRatio <= 0.0 || !e.torrent.Seeding() {
 		close(e.seedingDone)
 	} else {
+	seedRatioLoop:
 		for {
 			select {
 			// If the torrent is closed before the seed ratio is met, close the
@@ -354,7 +355,7 @@ func (e *Eventer) run() {
 			case <-time.After(e.seedWait()):
 				if float64(e.torrent.Stats().DataBytesWritten)/float64(e.torrent.BytesCompleted()) >= e.seedRatio {
 					close(e.seedingDone)
-					return
+					break seedRatioLoop
 				}
 			}
 		}
