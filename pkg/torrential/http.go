@@ -28,6 +28,9 @@ func NewHTTPHandler(svc *Service) http.Handler {
 		},
 	}
 
+	r.Path("/torrents/events").Methods("GET").HandlerFunc(h.getTorrentsEvents)
+	r.Path("/torrents/{infoHash}/events").Methods("GET").HandlerFunc(h.getTorrentEvents)
+
 	r.Path("/torrents").Methods("HEAD").HandlerFunc(h.headTorrents)
 	r.Path("/torrents").Methods("GET").HandlerFunc(h.getTorrents)
 	r.Path("/torrents").Methods("POST").Headers("Content-Type", "application/x-bittorrent").HandlerFunc(h.postTorrentData)
@@ -39,8 +42,7 @@ func NewHTTPHandler(svc *Service) http.Handler {
 	r.Path("/torrents/{infoHash}").Methods("HEAD").HandlerFunc(h.headTorrent)
 	r.Path("/torrents/{infoHash}").Methods("GET").HandlerFunc(h.getTorrent)
 	r.Path("/torrents/{infoHash}").Methods("DELETE").HandlerFunc(h.deleteTorrent)
-	r.Path("/torrents/{infoHash}/events").Methods("GET").HandlerFunc(h.getTorrentEvents)
-	r.Path("/torrents").HandlerFunc(h.supportedMethods("HEAD", "GET", "DELETE"))
+	r.Path("/torrents/{infoHash}").HandlerFunc(h.supportedMethods("HEAD", "GET", "DELETE"))
 
 	return r
 }
@@ -96,6 +98,31 @@ func (h *handler) postMagnetURI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	encodeTorrent(w, http.StatusCreated, torrent)
+}
+
+// getTorrentsEvents opens a websocket and sends events about all torrents.
+func (h *handler) getTorrentsEvents(w http.ResponseWriter, r *http.Request) {
+	eventer := h.ts.AllEventer()
+
+	ws, err := h.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		// err is handled by h.upgrader.Error, which calls encodeError
+		return
+	}
+	defer ws.Close()
+
+	for e := range eventer.Events(r.Context().Done()) {
+		var file *torrentFile
+		if e.File != nil {
+			file = toTorrentFile(e.File)
+		}
+		ws.WriteJSON(eventResult{Event: event{
+			Type:    eventTypeString(e.Type),
+			Torrent: toTorrent(e.Torrent),
+			File:    file,
+		}})
+	}
+	ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }
 
 // headTorrent returns the headers and status code given an info hash
@@ -155,7 +182,7 @@ func (h *handler) getTorrentEvents(w http.ResponseWriter, r *http.Request) {
 		encodeError(w, http.StatusNotFound, errors.New("torrent not found"))
 		return
 	}
-	eventer, err := h.ts.Eventer(infoHash)
+	eventer, err := h.ts.TorrentEventer(infoHash)
 	if err != nil {
 		encodeError(w, httpStatus(err), err)
 		return
@@ -168,7 +195,7 @@ func (h *handler) getTorrentEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 
-	for e := range eventer.Events() {
+	for e := range eventer.Events(r.Context().Done()) {
 		var file *torrentFile
 		if e.File != nil {
 			file = toTorrentFile(e.File)

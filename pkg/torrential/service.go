@@ -16,10 +16,11 @@ import (
 )
 
 type Service struct {
-	client    *atorrent.Client
-	eventers  map[string]*Eventer
-	conf      *Config
-	eventerMu sync.RWMutex
+	client     *atorrent.Client
+	allEventer *AllEventer
+	eventers   map[string]*TorrentEventer
+	conf       *Config
+	eventerMu  sync.RWMutex
 }
 
 type Config struct {
@@ -54,9 +55,10 @@ func NewService(conf *Config) (*Service, error) {
 		return nil, errors.Wrap(err, "could not create client")
 	}
 	svc := &Service{
-		client:   client,
-		conf:     conf,
-		eventers: make(map[string]*Eventer),
+		client:     client,
+		conf:       conf,
+		allEventer: NewAllEventer(),
+		eventers:   make(map[string]*TorrentEventer),
 	}
 	if svc.conf.Cache != nil {
 		specs, err := svc.conf.Cache.LoadTorrents()
@@ -116,7 +118,7 @@ func (svc *Service) AddMagnetURI(magnetURI string) (*atorrent.Torrent, error) {
 	return svc.addTorrentSpec(spec)
 }
 
-func (svc *Service) Eventer(infoHash string) (*Eventer, error) {
+func (svc *Service) TorrentEventer(infoHash string) (*TorrentEventer, error) {
 	svc.eventerMu.RLock()
 	defer svc.eventerMu.RUnlock()
 	eventer, ok := svc.eventers[infoHash]
@@ -124,6 +126,10 @@ func (svc *Service) Eventer(infoHash string) (*Eventer, error) {
 		return nil, notFoundErr{errors.New("torrent not found")}
 	}
 	return eventer, nil
+}
+
+func (svc *Service) AllEventer() Eventer {
+	return svc.allEventer
 }
 
 func (svc *Service) Drop(infoHash string, deleteFiles bool) error {
@@ -175,7 +181,8 @@ func (svc *Service) addTorrentSpec(spec *atorrent.TorrentSpec) (*atorrent.Torren
 		return nil, errors.Wrap(addTorrentErr{err}, "could not add torrent")
 	}
 
-	eventer := NewEventer(t, SeedRatio(svc.conf.SeedRatio))
+	eventer := NewTorrentEventer(t, SeedRatio(svc.conf.SeedRatio))
+	svc.allEventer.AddEventer(eventer)
 
 	svc.eventerMu.Lock()
 	svc.eventers[spec.InfoHash.String()] = eventer
@@ -194,7 +201,8 @@ func (svc *Service) addTorrentSpec(spec *atorrent.TorrentSpec) (*atorrent.Torren
 		}
 	}()
 	go func() {
-		for e := range eventer.Events() {
+		background := make(chan struct{})
+		for e := range eventer.Events(background) {
 			switch e.Type {
 			case EventAdded:
 				if err := invokeWebhook(&e, svc.conf.Webhooks.Added); err != nil {
