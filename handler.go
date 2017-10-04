@@ -9,7 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
 
-	atorrent "github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent"
 )
 
 type handler struct {
@@ -17,8 +17,10 @@ type handler struct {
 	upgrader *websocket.Upgrader
 }
 
-func NewHTTPHandler(svc *Service) http.Handler {
+func Handler(basePath string, svc *Service) http.Handler {
 	r := mux.NewRouter()
+	sr := r.PathPrefix(basePath).Subrouter()
+
 	h := handler{
 		ts: svc,
 		upgrader: &websocket.Upgrader{
@@ -28,21 +30,21 @@ func NewHTTPHandler(svc *Service) http.Handler {
 		},
 	}
 
-	r.Path("/torrents/events").Methods("GET").HandlerFunc(h.getTorrentsEvents)
-	r.Path("/torrents/{infoHash}/events").Methods("GET").HandlerFunc(h.getTorrentEvents)
+	sr.Path("/torrents/events").Methods("GET").HandlerFunc(h.getTorrentsEvents)
+	sr.Path("/torrents/{infoHash}/events").Methods("GET").HandlerFunc(h.getTorrentEvents)
 
-	r.Path("/torrents").Methods("HEAD").HandlerFunc(h.headTorrents)
-	r.Path("/torrents").Methods("GET").HandlerFunc(h.getTorrents)
-	r.Path("/torrents").Methods("POST").Headers("Content-Type", "application/x-bittorrent").HandlerFunc(h.postTorrentData)
-	r.Path("/torrents").Methods("POST").Headers("Content-Type", "application/x-url").HandlerFunc(h.postTorrentURL)
-	r.Path("/torrents").Methods("POST").Headers("Content-Type", "x-scheme-handler/magnet").HandlerFunc(h.postMagnetURI)
-	r.Path("/torrents").Methods("POST").HandlerFunc(h.badContentType)
-	r.Path("/torrents").HandlerFunc(h.supportedMethods("HEAD", "GET", "POST"))
+	sr.Path("/torrents").Methods("HEAD").HandlerFunc(h.headTorrents)
+	sr.Path("/torrents").Methods("GET").HandlerFunc(h.getTorrents)
+	sr.Path("/torrents").Methods("POST").Headers("Content-Type", "application/x-bittorrent").HandlerFunc(h.postTorrentData)
+	sr.Path("/torrents").Methods("POST").Headers("Content-Type", "application/x-url").HandlerFunc(h.postTorrentURL)
+	sr.Path("/torrents").Methods("POST").Headers("Content-Type", "x-scheme-handler/magnet").HandlerFunc(h.postMagnetURI)
+	sr.Path("/torrents").Methods("POST").HandlerFunc(h.badContentType)
+	sr.Path("/torrents").HandlerFunc(h.supportedMethods("HEAD", "GET", "POST"))
 
-	r.Path("/torrents/{infoHash}").Methods("HEAD").HandlerFunc(h.headTorrent)
-	r.Path("/torrents/{infoHash}").Methods("GET").HandlerFunc(h.getTorrent)
-	r.Path("/torrents/{infoHash}").Methods("DELETE").HandlerFunc(h.deleteTorrent)
-	r.Path("/torrents/{infoHash}").HandlerFunc(h.supportedMethods("HEAD", "GET", "DELETE"))
+	sr.Path("/torrents/{infoHash}").Methods("HEAD").HandlerFunc(h.headTorrent)
+	sr.Path("/torrents/{infoHash}").Methods("GET").HandlerFunc(h.getTorrent)
+	sr.Path("/torrents/{infoHash}").Methods("DELETE").HandlerFunc(h.deleteTorrent)
+	sr.Path("/torrents/{infoHash}").HandlerFunc(h.supportedMethods("HEAD", "GET", "DELETE"))
 
 	return r
 }
@@ -102,7 +104,7 @@ func (h *handler) postMagnetURI(w http.ResponseWriter, r *http.Request) {
 
 // getTorrentsEvents opens a websocket and sends events about all torrents.
 func (h *handler) getTorrentsEvents(w http.ResponseWriter, r *http.Request) {
-	eventer := h.ts.AllEventer()
+	eventer := h.ts.TorrentsEventer()
 
 	ws, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -112,13 +114,13 @@ func (h *handler) getTorrentsEvents(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 
 	for e := range eventer.Events(r.Context().Done()) {
-		var file *torrentFile
+		var file *torrentFileJSON
 		if e.File != nil {
-			file = toTorrentFile(e.File)
+			file = toTorrentFileJSON(e.File)
 		}
-		ws.WriteJSON(eventResult{Event: event{
+		ws.WriteJSON(eventResult{Event: eventJSON{
 			Type:    eventTypeString(e.Type),
-			Torrent: toTorrent(e.Torrent),
+			Torrent: toTorrentJSON(e.Torrent),
 			File:    file,
 		}})
 	}
@@ -196,29 +198,29 @@ func (h *handler) getTorrentEvents(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 
 	for e := range eventer.Events(r.Context().Done()) {
-		var file *torrentFile
+		var file *torrentFileJSON
 		if e.File != nil {
-			file = toTorrentFile(e.File)
+			file = toTorrentFileJSON(e.File)
 		}
-		ws.WriteJSON(eventResult{Event: event{
+		ws.WriteJSON(eventResult{Event: eventJSON{
 			Type:    eventTypeString(e.Type),
-			Torrent: toTorrent(e.Torrent),
+			Torrent: toTorrentJSON(e.Torrent),
 			File:    file,
 		}})
 	}
 	ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }
 
-func encodeTorrent(w http.ResponseWriter, code int, t *atorrent.Torrent) {
-	result := toTorrent(t)
+func encodeTorrent(w http.ResponseWriter, code int, t *torrent.Torrent) {
+	result := toTorrentJSON(t)
 	writeHeader(w, code)
 	json.NewEncoder(w).Encode(torrentResult{Torrent: &result})
 }
 
-func encodeTorrents(w http.ResponseWriter, code int, torrents []*atorrent.Torrent) {
-	results := make([]torrent, 0)
+func encodeTorrents(w http.ResponseWriter, code int, torrents []*torrent.Torrent) {
+	results := make([]torrentJSON, 0)
 	for _, t := range torrents {
-		results = append(results, toTorrent(t))
+		results = append(results, toTorrentJSON(t))
 	}
 	writeHeader(w, code)
 	json.NewEncoder(w).Encode(torrentsResult{Torrents: results})
@@ -240,15 +242,15 @@ func writeHeader(w http.ResponseWriter, code int) {
 }
 
 type torrentResult struct {
-	Torrent *torrent `json:"torrent"`
+	Torrent *torrentJSON `json:"torrent"`
 }
 
 type torrentsResult struct {
-	Torrents []torrent `json:"torrents"`
+	Torrents []torrentJSON `json:"torrents"`
 }
 
 type eventResult struct {
-	Event event `json:"event"`
+	Event eventJSON `json:"event"`
 }
 
 type errorResult struct {
@@ -282,28 +284,28 @@ func (h *handler) supportedMethods(supportedMethods ...string) http.HandlerFunc 
 	}
 }
 
-type torrent struct {
-	BytesCompleted int            `json:"bytesCompleted"` // Number of bytes completed
-	BytesMissing   int            `json:"bytesMissing"`   // Number of bytes missing
-	Files          []*torrentFile `json:"files"`          // Files contained in the torrent
-	InfoHash       string         `json:"infoHash"`       // Torrent info hash
-	Length         int            `json:"length"`         // Total number of bytes in torrent
-	MagnetLink     string         `json:"magnetLink"`     // Torrent magnet link
-	Name           string         `json:"name"`           // Torrent name
-	NumPieces      int            `json:"numPieces"`      // Total number of pieces in torrent
-	Seeding        bool           `json:"seeding"`        // Whether torrent is currently seeding
-	Stats          torrentStats   `json:"stats"`          // Torrent stats
-	HasInfo        bool           `json:"hasInfo"`        // Whether the torrent info has been received
+type torrentJSON struct {
+	BytesCompleted int                `json:"bytesCompleted"` // Number of bytes completed
+	BytesMissing   int                `json:"bytesMissing"`   // Number of bytes missing
+	Files          []*torrentFileJSON `json:"files"`          // Files contained in the torrent
+	InfoHash       string             `json:"infoHash"`       // Torrent info hash
+	Length         int                `json:"length"`         // Total number of bytes in torrent
+	MagnetLink     string             `json:"magnetLink"`     // Torrent magnet link
+	Name           string             `json:"name"`           // Torrent name
+	NumPieces      int                `json:"numPieces"`      // Total number of pieces in torrent
+	Seeding        bool               `json:"seeding"`        // Whether torrent is currently seeding
+	Stats          torrentStatsJSON   `json:"stats"`          // Torrent stats
+	HasInfo        bool               `json:"hasInfo"`        // Whether the torrent info has been received
 }
 
-type torrentFile struct {
+type torrentFileJSON struct {
 	DisplayPath string `json:"displayPath"`
 	Length      int    `json:"length"`
 	Offset      int    `json:"offset"`
 	Path        string `json:"path"`
 }
 
-type torrentStats struct {
+type torrentStatsJSON struct {
 	ActivePeers      int `json:"activePeers"`
 	BytesRead        int `json:"bytesRead"`
 	BytesWritten     int `json:"bytesWritten"`
@@ -316,10 +318,10 @@ type torrentStats struct {
 	TotalPeers       int `json:"totalPeers"`
 }
 
-type event struct {
-	Type    string       `json:"type"`
-	Torrent torrent      `json:"torrent"`
-	File    *torrentFile `json:"file,omitempty"`
+type eventJSON struct {
+	Type    string           `json:"type"`
+	Torrent torrentJSON      `json:"torrent"`
+	File    *torrentFileJSON `json:"file,omitempty"`
 }
 
 func eventTypeString(t EventType) string {
@@ -341,9 +343,9 @@ func eventTypeString(t EventType) string {
 	}
 }
 
-func toTorrent(t *atorrent.Torrent) torrent {
+func toTorrentJSON(t *torrent.Torrent) torrentJSON {
 	metainfo := t.Metainfo()
-	res := torrent{
+	res := torrentJSON{
 		BytesCompleted: int(t.BytesCompleted()),
 		BytesMissing:   0,
 		Files:          toTorrentFiles(t.Files()),
@@ -367,8 +369,8 @@ func toTorrent(t *atorrent.Torrent) torrent {
 	return res
 }
 
-func toTorrentFile(f *atorrent.File) *torrentFile {
-	return &torrentFile{
+func toTorrentFileJSON(f *torrent.File) *torrentFileJSON {
+	return &torrentFileJSON{
 		Path:        f.Path(),
 		DisplayPath: f.DisplayPath(),
 		Length:      int(f.Length()),
@@ -376,16 +378,16 @@ func toTorrentFile(f *atorrent.File) *torrentFile {
 	}
 }
 
-func toTorrentFiles(v []atorrent.File) []*torrentFile {
-	res := make([]*torrentFile, 0)
+func toTorrentFiles(v []torrent.File) []*torrentFileJSON {
+	res := make([]*torrentFileJSON, 0)
 	for _, f := range v {
-		res = append(res, toTorrentFile(&f))
+		res = append(res, toTorrentFileJSON(&f))
 	}
 	return res
 }
 
-func statsToTorrentStats(v atorrent.TorrentStats) torrentStats {
-	return torrentStats{
+func statsToTorrentStats(v torrent.TorrentStats) torrentStatsJSON {
+	return torrentStatsJSON{
 		BytesRead:        int(v.BytesRead),
 		BytesWritten:     int(v.BytesWritten),
 		ChunksRead:       int(v.ChunksRead),

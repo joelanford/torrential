@@ -7,14 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	atorrent "github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent"
 	"github.com/pkg/errors"
 )
 
 type Cache interface {
-	SaveTorrent(*atorrent.Torrent) error
-	LoadTorrents() ([]atorrent.TorrentSpec, error)
-	DeleteTorrent(*atorrent.Torrent) error
+	SaveTorrent(*torrent.Torrent) error
+	LoadTorrents() ([]torrent.TorrentSpec, error)
+	DeleteTorrent(*torrent.Torrent) error
 }
 
 type FileCache struct {
@@ -27,7 +27,7 @@ func NewFileCache(dir string) *FileCache {
 	}
 }
 
-func (c *FileCache) SaveTorrent(t *atorrent.Torrent) error {
+func (c *FileCache) SaveTorrent(t *torrent.Torrent) error {
 	select {
 	case <-t.GotInfo():
 		filename := filepath.Join(c.Directory, fmt.Sprintf("%s.torrent", t.InfoHash().HexString()))
@@ -42,7 +42,7 @@ func (c *FileCache) SaveTorrent(t *atorrent.Torrent) error {
 	}
 }
 
-func (c *FileCache) LoadTorrents() ([]atorrent.TorrentSpec, error) {
+func (c *FileCache) LoadTorrents() ([]torrent.TorrentSpec, error) {
 	err := os.MkdirAll(c.Directory, 0750)
 	if err != nil {
 		return nil, err
@@ -52,7 +52,7 @@ func (c *FileCache) LoadTorrents() ([]atorrent.TorrentSpec, error) {
 	if err != nil {
 		return nil, err
 	}
-	var specs []atorrent.TorrentSpec
+	var specs []torrent.TorrentSpec
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".torrent") && !e.IsDir() {
 			f, err := os.Open(filepath.Join(c.Directory, e.Name()))
@@ -69,7 +69,7 @@ func (c *FileCache) LoadTorrents() ([]atorrent.TorrentSpec, error) {
 	}
 	return specs, nil
 }
-func (c *FileCache) DeleteTorrent(t *atorrent.Torrent) error {
+func (c *FileCache) DeleteTorrent(t *torrent.Torrent) error {
 	filename := filepath.Join(c.Directory, fmt.Sprintf("%s.torrent", t.InfoHash().HexString()))
 	return os.Remove(filename)
 }

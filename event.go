@@ -4,11 +4,28 @@ import (
 	"sync"
 	"time"
 
-	atorrent "github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent"
 	uuid "github.com/satori/go.uuid"
 )
 
-var _ Eventer = &AllEventer{}
+type Event struct {
+	Type    EventType
+	Torrent *torrent.Torrent
+	File    *torrent.File
+}
+
+type EventType int
+
+const (
+	EventAdded EventType = iota
+	EventGotInfo
+	EventFileDone
+	EventDownloadDone
+	EventSeedingDone
+	EventClosed
+)
+
+var _ Eventer = &TorrentsEventer{}
 var _ Eventer = &TorrentEventer{}
 
 type Eventer interface {
@@ -20,21 +37,21 @@ type ClosedEventer interface {
 	Closed() <-chan struct{}
 }
 
-type AllEventer struct {
+type TorrentsEventer struct {
 	eventerChans map[string]chan Eventer
 	eventerMap   map[string]Eventer
 	numActive    int
 	mutex        sync.RWMutex
 }
 
-func NewAllEventer() *AllEventer {
-	return &AllEventer{
+func NewTorrentsEventer() *TorrentsEventer {
+	return &TorrentsEventer{
 		eventerChans: make(map[string]chan Eventer),
 		eventerMap:   make(map[string]Eventer),
 	}
 }
 
-func (ae *AllEventer) Events(done <-chan struct{}) <-chan Event {
+func (ae *TorrentsEventer) Events(done <-chan struct{}) <-chan Event {
 	events := make(chan Event)
 	eventerChan := make(chan Eventer)
 
@@ -76,7 +93,7 @@ func (ae *AllEventer) Events(done <-chan struct{}) <-chan Event {
 	return events
 }
 
-func (ae *AllEventer) AddEventer(e ClosedEventer) {
+func (ae *TorrentsEventer) AddEventer(e ClosedEventer) {
 	ae.mutex.RLock()
 	defer ae.mutex.RUnlock()
 
@@ -96,7 +113,7 @@ func (ae *AllEventer) AddEventer(e ClosedEventer) {
 type TorrentEventer struct {
 	seedRatio float64
 
-	torrent *atorrent.Torrent
+	torrent *torrent.Torrent
 
 	added        chan struct{}
 	gotInfo      chan struct{}
@@ -111,7 +128,7 @@ type TorrentEventer struct {
 
 type TorrentEventerOptionFunc func(e *TorrentEventer)
 
-func NewTorrentEventer(t *atorrent.Torrent, options ...TorrentEventerOptionFunc) *TorrentEventer {
+func NewTorrentEventer(t *torrent.Torrent, options ...TorrentEventerOptionFunc) *TorrentEventer {
 	e := TorrentEventer{
 		torrent:      t,
 		added:        make(chan struct{}),
@@ -221,7 +238,7 @@ func (e *TorrentEventer) Events(done <-chan struct{}) <-chan Event {
 			go func() {
 				for _, file := range e.torrent.Files() {
 					fileDone, _ := e.FileDone(file.Path())
-					go func(f atorrent.File) {
+					go func(f torrent.File) {
 						defer wg.Done()
 						select {
 						case <-e.Closed():
@@ -398,7 +415,7 @@ func (e *TorrentEventer) run() {
 				return
 			}
 
-			psc := piece.(atorrent.PieceStateChange)
+			psc := piece.(torrent.PieceStateChange)
 
 			// If the piece is complete:
 			//   1. find the set of files it contains data for
