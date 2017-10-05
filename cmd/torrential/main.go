@@ -37,15 +37,15 @@ func main() {
 		},
 		Cache:     torrential.NewFileCache(torrentsDir),
 		SeedRatio: seedRatio,
-		Webhooks:  torrential.SingleWebhook(webhookURL),
+		Webhooks:  torrential.WebhookAll(webhookURL),
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	router := mux.NewRouter()
-	router.PathPrefix(httpBasePath).Handler(torrential.Handler(httpBasePath, svc))
 	router.PathPrefix("/webhook").HandlerFunc(dumpRequest)
+	router.PathPrefix(httpBasePath).Handler(torrential.Handler(httpBasePath, svc))
 
 	log.Fatal(http.ListenAndServe(listenAddr, router))
 }

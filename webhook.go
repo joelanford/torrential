@@ -3,9 +3,7 @@ package torrential
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/pkg/errors"
 )
@@ -19,7 +17,7 @@ type Webhooks struct {
 	Closed       string
 }
 
-func SingleWebhook(webhookURL string) Webhooks {
+func WebhookAll(webhookURL string) Webhooks {
 	return Webhooks{
 		Added:        webhookURL,
 		GotInfo:      webhookURL,
@@ -27,18 +25,6 @@ func SingleWebhook(webhookURL string) Webhooks {
 		DownloadDone: webhookURL,
 		SeedingDone:  webhookURL,
 		Closed:       webhookURL,
-	}
-}
-
-func PathWebhooks(webhookBaseURL string) Webhooks {
-	webhookBaseURL = strings.TrimSuffix(webhookBaseURL, "/")
-	return Webhooks{
-		Added:        fmt.Sprintf("%s/added", webhookBaseURL),
-		GotInfo:      fmt.Sprintf("%s/gotInfo", webhookBaseURL),
-		FileDone:     fmt.Sprintf("%s/fileDone", webhookBaseURL),
-		DownloadDone: fmt.Sprintf("%s/downloadDone", webhookBaseURL),
-		SeedingDone:  fmt.Sprintf("%s/seedingDone", webhookBaseURL),
-		Closed:       fmt.Sprintf("%s/closed", webhookBaseURL),
 	}
 }
 
