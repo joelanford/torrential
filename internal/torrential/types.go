@@ -39,3 +39,32 @@ type Event struct {
 	Torrent Torrent `json:"torrent"`
 	File    *File   `json:"file,omitempty"`
 }
+
+type TorrentResult struct {
+	Torrent *Torrent `json:"torrent"`
+}
+
+type TorrentsResult struct {
+	Torrents []Torrent `json:"torrents"`
+}
+
+type EventResult struct {
+	Event Event `json:"event"`
+}
+
+type ErrorResult struct {
+	Error string `json:"error"`
+}
+
+func NewTorrentResult(torrent *Torrent) *TorrentResult {
+	return &TorrentResult{Torrent: torrent}
+}
+func NewTorrentsResult(torrents []Torrent) *TorrentsResult {
+	return &TorrentsResult{Torrents: torrents}
+}
+func NewEventResult(event Event) *EventResult {
+	return &EventResult{Event: event}
+}
+func NewErrorResult(err error) *ErrorResult {
+	return &ErrorResult{Error: err.Error()}
+}

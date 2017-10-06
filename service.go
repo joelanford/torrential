@@ -1,6 +1,8 @@
 package torrential
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/joelanford/torrential/eventer"
 	"github.com/joelanford/torrential/internal/convert"
+	t "github.com/joelanford/torrential/internal/torrential"
 
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
@@ -191,30 +194,9 @@ func (svc *Service) addTorrentSpec(spec *torrent.TorrentSpec) (*torrent.Torrent,
 	go func() {
 		background := make(chan struct{})
 		for event := range e.Events(background) {
-			switch event.Type {
-			case eventer.Added:
-				if err := invokeWebhook(event, svc.conf.Webhooks.Added); err != nil {
-					log.Printf("error invoking %s webhook %s for torrent %s: %s", event.Type, svc.conf.Webhooks.Added, event.Torrent.InfoHash().String(), err)
-				}
-			case eventer.GotInfo:
-				if err := invokeWebhook(event, svc.conf.Webhooks.GotInfo); err != nil {
-					log.Printf("error invoking %s webhook %s for torrent %s: %s", event.Type, svc.conf.Webhooks.GotInfo, event.Torrent.InfoHash().String(), err)
-				}
-			case eventer.FileDone:
-				if err := invokeWebhook(event, svc.conf.Webhooks.FileDone); err != nil {
-					log.Printf("error invoking %s webhook %s for torrent %s: %s", event.Type, svc.conf.Webhooks.FileDone, event.Torrent.InfoHash().String(), err)
-				}
-			case eventer.DownloadDone:
-				if err := invokeWebhook(event, svc.conf.Webhooks.DownloadDone); err != nil {
-					log.Printf("error invoking %s webhook %s for torrent %s: %s", event.Type, svc.conf.Webhooks.DownloadDone, event.Torrent.InfoHash().String(), err)
-				}
-			case eventer.SeedingDone:
-				if err := invokeWebhook(event, svc.conf.Webhooks.SeedingDone); err != nil {
-					log.Printf("error invoking %s webhook %s for torrent %s: %s", event.Type, svc.conf.Webhooks.SeedingDone, event.Torrent.InfoHash().String(), err)
-				}
-			case eventer.Closed:
-				if err := invokeWebhook(event, svc.conf.Webhooks.Closed); err != nil {
-					log.Printf("error invoking %s webhook %s for torrent %s: %s", event.Type, svc.conf.Webhooks.Closed, event.Torrent.InfoHash().String(), err)
+			if svc.conf.WebhookURL != "" {
+				if err := invokeWebhook(event, svc.conf.WebhookURL); err != nil {
+					log.Printf("error invoking webhook %s for %s event for torrent %s: %s", svc.conf.WebhookURL, event.Type, event.Torrent.InfoHash().String(), err)
 				}
 			}
 		}
@@ -225,6 +207,22 @@ func (svc *Service) addTorrentSpec(spec *torrent.TorrentSpec) (*torrent.Torrent,
 type Config struct {
 	ClientConfig *torrent.Config
 	Cache        cache.Cache
-	Webhooks     Webhooks
+	WebhookURL   string
 	SeedRatio    float64
+}
+
+func invokeWebhook(e eventer.Event, url string) error {
+	event := convert.Event(e)
+	jsonData, err := json.Marshal(t.NewEventResult(event))
+	if err != nil {
+		return err
+	}
+	resp, err := http.Post(url, "application/json", bytes.NewReader(jsonData))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return errors.New(resp.Status)
+	}
+	return nil
 }

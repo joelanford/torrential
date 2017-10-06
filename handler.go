@@ -116,16 +116,8 @@ func (h *handler) getTorrentsEvents(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 
 	for e := range eventer.Events(r.Context().Done()) {
-		var file *t.File
-		if e.File != nil {
-			file = &t.File{}
-			*file = convert.File(*e.File)
-		}
-		ws.WriteJSON(eventResult{Event: t.Event{
-			Type:    e.Type.String(),
-			Torrent: convert.Torrent(e.Torrent),
-			File:    file,
-		}})
+		event := convert.Event(e)
+		ws.WriteJSON(t.NewEventResult(event))
 	}
 	ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }
@@ -201,24 +193,16 @@ func (h *handler) getTorrentEvents(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 
 	for e := range eventer.Events(r.Context().Done()) {
-		var file *t.File
-		if e.File != nil {
-			file = &t.File{}
-			*file = convert.File(*e.File)
-		}
-		ws.WriteJSON(eventResult{Event: t.Event{
-			Type:    e.Type.String(),
-			Torrent: convert.Torrent(e.Torrent),
-			File:    file,
-		}})
+		event := convert.Event(e)
+		ws.WriteJSON(t.NewEventResult(event))
 	}
 	ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }
 
-func encodeTorrent(w http.ResponseWriter, code int, t *torrent.Torrent) {
-	result := convert.Torrent(t)
+func encodeTorrent(w http.ResponseWriter, code int, torrent *torrent.Torrent) {
+	result := convert.Torrent(torrent)
 	writeHeader(w, code)
-	json.NewEncoder(w).Encode(torrentResult{Torrent: &result})
+	json.NewEncoder(w).Encode(t.NewTorrentResult(&result))
 }
 
 func encodeTorrents(w http.ResponseWriter, code int, torrents []*torrent.Torrent) {
@@ -227,7 +211,7 @@ func encodeTorrents(w http.ResponseWriter, code int, torrents []*torrent.Torrent
 		results = append(results, convert.Torrent(t))
 	}
 	writeHeader(w, code)
-	json.NewEncoder(w).Encode(torrentsResult{Torrents: results})
+	json.NewEncoder(w).Encode(t.NewTorrentsResult(results))
 }
 
 func encodeEmptyResult(w http.ResponseWriter, code int) {
@@ -237,28 +221,12 @@ func encodeEmptyResult(w http.ResponseWriter, code int) {
 
 func encodeError(w http.ResponseWriter, code int, err error) {
 	writeHeader(w, code)
-	json.NewEncoder(w).Encode(errorResult{Error: err.Error()})
+	json.NewEncoder(w).Encode(t.NewErrorResult(err))
 }
 
 func writeHeader(w http.ResponseWriter, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-}
-
-type torrentResult struct {
-	Torrent *t.Torrent `json:"torrent"`
-}
-
-type torrentsResult struct {
-	Torrents []t.Torrent `json:"torrents"`
-}
-
-type eventResult struct {
-	Event t.Event `json:"event"`
-}
-
-type errorResult struct {
-	Error string `json:"error"`
 }
 
 func (h *handler) badContentType(w http.ResponseWriter, r *http.Request) {
