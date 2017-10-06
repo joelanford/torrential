@@ -6,6 +6,10 @@ import (
 	"net/http"
 
 	"github.com/pkg/errors"
+
+	"github.com/joelanford/torrential/eventer"
+	"github.com/joelanford/torrential/internal/convert"
+	t "github.com/joelanford/torrential/internal/torrential"
 )
 
 type Webhooks struct {
@@ -28,15 +32,16 @@ func WebhookAll(webhookURL string) Webhooks {
 	}
 }
 
-func invokeWebhook(e Event, url string) error {
+func invokeWebhook(e eventer.Event, url string) error {
 	if url != "" {
-		var file *torrentFileJSON
+		var file *t.File
 		if e.File != nil {
-			file = toTorrentFileJSON(e.File)
+			file = &t.File{}
+			*file = convert.File(*e.File)
 		}
-		jsonData, err := json.Marshal(eventResult{Event: eventJSON{
-			Type:    eventTypeString(e.Type),
-			Torrent: toTorrentJSON(e.Torrent),
+		jsonData, err := json.Marshal(eventResult{Event: t.Event{
+			Type:    e.Type.String(),
+			Torrent: convert.Torrent(e.Torrent),
 			File:    file,
 		}})
 		if err != nil {

@@ -10,6 +10,7 @@ import (
 	"github.com/anacrolix/torrent"
 	"github.com/gorilla/mux"
 	"github.com/joelanford/torrential"
+	"github.com/joelanford/torrential/cache"
 )
 
 var (
@@ -35,7 +36,7 @@ func main() {
 		ClientConfig: &torrent.Config{
 			DataDir: downloadDir,
 		},
-		Cache:     torrential.NewFileCache(torrentsDir),
+		Cache:     cache.NewDirectory(torrentsDir),
 		SeedRatio: seedRatio,
 		Webhooks:  torrential.WebhookAll(webhookURL),
 	})
