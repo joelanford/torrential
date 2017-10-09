@@ -40,9 +40,9 @@ func main() {
 		ClientConfig: &torrent.Config{
 			DataDir: "torrential/downloads",
 		},
-		Cache:     cache.NewDirectory("torrential/cache"),
-		SeedRatio: 1.0,
-		Webhooks:  torrential.WebhookAll("http://localhost:8080/webhook"),
+		Cache:      cache.NewDirectory("torrential/cache"),
+		SeedRatio:  1.0,
+		WebhookURL: "http://localhost:8080/webhook",
 	})
 	if err != nil {
 		log.Fatal(err)
