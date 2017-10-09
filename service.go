@@ -199,6 +199,9 @@ func (svc *Service) addTorrentSpec(spec *torrent.TorrentSpec) (*torrent.Torrent,
 					log.Printf("error invoking webhook %s for %s event for torrent %s: %s", svc.conf.WebhookURL, event.Type, event.Torrent.InfoHash().String(), err)
 				}
 			}
+			if event.Type == eventer.SeedingDone && svc.conf.DropWhenDone {
+				event.Torrent.Drop()
+			}
 		}
 	}()
 	return t, nil
@@ -209,6 +212,7 @@ type Config struct {
 	Cache        cache.Cache
 	WebhookURL   string
 	SeedRatio    float64
+	DropWhenDone bool
 }
 
 func invokeWebhook(e eventer.Event, url string) error {

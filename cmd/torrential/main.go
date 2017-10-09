@@ -2,10 +2,8 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
-	"net/http/httputil"
 
 	"github.com/anacrolix/torrent"
 	"github.com/gorilla/mux"
@@ -18,17 +16,19 @@ var (
 	downloadDir  string
 	torrentsDir  string
 	seedRatio    float64
+	dropWhenDone bool
 	webhookURL   string
 	httpBasePath string
 )
 
 func main() {
 	flag.StringVar(&listenAddr, "listen-addr", ":8080", "Address to listen on")
-	flag.StringVar(&downloadDir, "download-dir", "/tmp/torrential/downloads", "Directory in which to download torrent data")
-	flag.StringVar(&torrentsDir, "torrents-dir", "/tmp/torrential/torrents", "Directory in which to cache active torrent metadata files")
-	flag.Float64Var(&seedRatio, "seed-ratio", 0.0, "Seed ratio of torrents that determines when seed ratio events and webhooks are invoked")
+	flag.StringVar(&downloadDir, "download-dir", "torrential/downloads", "Directory in which to download torrent data")
+	flag.StringVar(&torrentsDir, "torrents-dir", "torrential/torrents", "Directory in which to cache active torrent metadata files")
+	flag.Float64Var(&seedRatio, "seed-ratio", 1.0, "Seed ratio of torrents that determines when seed ratio events and webhooks are invoked")
+	flag.BoolVar(&dropWhenDone, "drop-done", true, "Drop the torrent when the download completes (or when the seed ratio is met, if enabled)")
 	flag.StringVar(&webhookURL, "webhook-url", "http://localhost:8080/webhook", "Webhook to invoke for torrent events")
-	flag.StringVar(&httpBasePath, "http-base-path", "/", "Base path of torrential HTTP handler")
+	flag.StringVar(&httpBasePath, "http-basepath", "/", "Base path of torrential HTTP handler")
 
 	flag.Parse()
 
@@ -36,26 +36,17 @@ func main() {
 		ClientConfig: &torrent.Config{
 			DataDir: downloadDir,
 		},
-		Cache:     cache.NewDirectory(torrentsDir),
-		SeedRatio: seedRatio,
-		Webhooks:  torrential.WebhookAll(webhookURL),
+		Cache:        cache.NewDirectory(torrentsDir),
+		SeedRatio:    seedRatio,
+		DropWhenDone: dropWhenDone,
+		WebhookURL:   webhookURL,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	router := mux.NewRouter()
-	router.PathPrefix("/webhook").HandlerFunc(dumpRequest)
 	router.PathPrefix(httpBasePath).Handler(torrential.Handler(httpBasePath, svc))
 
 	log.Fatal(http.ListenAndServe(listenAddr, router))
-}
-
-func dumpRequest(w http.ResponseWriter, r *http.Request) {
-	output, err := httputil.DumpRequest(r, true)
-	if err != nil {
-		fmt.Printf("Error: %s\n", err)
-		return
-	}
-	fmt.Println(string(output))
 }
