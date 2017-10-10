@@ -1,16 +1,92 @@
-package eventer
+package torrential
 
 import (
 	"sync"
 	"time"
 
 	"github.com/anacrolix/torrent"
+	uuid "github.com/satori/go.uuid"
 )
 
-type Torrent struct {
+type MultiEventer struct {
+	eventerChans map[string]chan Eventer
+	eventerMap   map[string]Eventer
+	numActive    int
+	mutex        sync.RWMutex
+}
+
+var _ Eventer = &MultiEventer{}
+
+func newMultiEventer() *MultiEventer {
+	return &MultiEventer{
+		eventerChans: make(map[string]chan Eventer),
+		eventerMap:   make(map[string]Eventer),
+	}
+}
+
+func (e *MultiEventer) Events(done <-chan struct{}) <-chan Event {
+	events := make(chan Event)
+	eventerChan := make(chan Eventer)
+
+	id := uuid.NewV4().String()
+	e.mutex.Lock()
+	e.eventerChans[id] = eventerChan
+	e.mutex.Unlock()
+
+	go func() {
+		e.mutex.RLock()
+		defer e.mutex.RUnlock()
+		for _, eventer := range e.eventerMap {
+			eventerChan <- eventer
+		}
+	}()
+	go func() {
+		defer func() {
+			e.mutex.Lock()
+			delete(e.eventerChans, id)
+			e.mutex.Unlock()
+			close(events)
+		}()
+		for {
+			select {
+			case t, ok := <-eventerChan:
+				if !ok {
+					return
+				}
+				go func() {
+					for event := range t.Events(done) {
+						events <- event
+					}
+				}()
+			case <-done:
+				return
+			}
+		}
+	}()
+	return events
+}
+
+func (e *MultiEventer) add(t *TorrentEventer) {
+	e.mutex.RLock()
+	defer e.mutex.RUnlock()
+
+	id := uuid.NewV4().String()
+	e.eventerMap[id] = t
+	go func() {
+		<-t.Closed()
+		e.mutex.Lock()
+		delete(e.eventerMap, id)
+		e.mutex.Unlock()
+	}()
+	for _, eventerChan := range e.eventerChans {
+		eventerChan <- t
+	}
+}
+
+type TorrentEventer struct {
 	seedRatio float64
 
-	torrent *torrent.Torrent
+	torrent Torrent
 
 	added        chan struct{}
 	gotInfo      chan struct{}
@@ -23,12 +99,12 @@ type Torrent struct {
 	filesReady chan struct{}
 }
 
-var _ Eventer = &Torrent{}
+var _ Eventer = &TorrentEventer{}
 
-type OptionFunc func(e *Torrent)
+type EventerOptionFunc func(e *TorrentEventer)
 
-func New(t *torrent.Torrent, options ...OptionFunc) *Torrent {
-	e := Torrent{
+func newTorrentEventer(t Torrent, options ...EventerOptionFunc) *TorrentEventer {
+	e := TorrentEventer{
 		torrent:      t,
 		added:        make(chan struct{}),
 		gotInfo:      make(chan struct{}),
@@ -49,31 +125,31 @@ func New(t *torrent.Torrent, options ...OptionFunc) *Torrent {
 
 // SetSeedRatio sets the monitored seed ratio for the torrent. If the channel
 // returned by SeedingDone() has already been closed, this will have no effect.
-func (e *Torrent) SetSeedRatio(seedRatio float64) {
+func (e *TorrentEventer) SetSeedRatio(seedRatio float64) {
 	e.seedRatio = seedRatio
 }
 
 // SeedRatio returns an OptionFunc that sets the given seed ratio when the
 // Torrent is initialized.
-func SeedRatio(seedRatio float64) OptionFunc {
-	return func(e *Torrent) {
+func SeedRatio(seedRatio float64) EventerOptionFunc {
+	return func(e *TorrentEventer) {
 		e.seedRatio = seedRatio
 	}
 }
 
 // Added returns a channel that will be closed when the torrent is added.
-func (e *Torrent) Added() <-chan struct{} {
+func (e *TorrentEventer) Added() <-chan struct{} {
 	return e.added
 }
 
 // GotInfo returns a channel that will be closed when the torrent info is ready.
-func (e *Torrent) GotInfo() <-chan struct{} {
+func (e *TorrentEventer) GotInfo() <-chan struct{} {
 	return e.gotInfo
 }
 
 // FileDone returns a channel that will be closed when the file at the given
 // path has completed downloading.
-func (e *Torrent) FileDone(filePath string) (<-chan struct{}, bool) {
+func (e *TorrentEventer) FileDone(filePath string) (<-chan struct{}, bool) {
 	e.fdMutex.RLock()
 	defer e.fdMutex.RUnlock()
 	c, ok := e.fileDone[filePath]
@@ -82,25 +158,25 @@ func (e *Torrent) FileDone(filePath string) (<-chan struct{}, bool) {
 
 // DownloadDone returns a channel that will be closed when the torrent download
 // is complete.
-func (e *Torrent) DownloadDone() <-chan struct{} {
+func (e *TorrentEventer) DownloadDone() <-chan struct{} {
 	return e.downloadDone
 }
 
 // SeedingDone returns a channel that will be closed when the torrent seeding
 // is complete, based on the Torrent's configured seed ratio. Changes to the
 // seed ratio after the returned channel is closed will have no effect.
-func (e *Torrent) SeedingDone() <-chan struct{} {
+func (e *TorrentEventer) SeedingDone() <-chan struct{} {
 	return e.seedingDone
 }
 
 // Closed returns a channel that will be closed when the torrent is closed.
-func (e *Torrent) Closed() <-chan struct{} {
+func (e *TorrentEventer) Closed() <-chan struct{} {
 	return e.closed
 }
 
 // Events returns a channel on which all of the events will be sent. The channel
 // will be closed after the closed event is sent.
-func (e *Torrent) Events(done <-chan struct{}) <-chan Event {
+func (e *TorrentEventer) Events(done <-chan struct{}) <-chan Event {
 	events := make(chan Event)
 
 	go func() {
@@ -145,7 +221,7 @@ func (e *Torrent) Events(done <-chan struct{}) <-chan Event {
 						case <-done:
 							return
 						case <-fileDone:
-							events <- Event{Type: FileDone, Torrent: e.torrent, File: &f}
+							events <- Event{Type: FileDone, Torrent: e.torrent, File: &File{&f}}
 						}
 					}(file)
 				}
@@ -192,7 +268,7 @@ func (e *Torrent) Events(done <-chan struct{}) <-chan Event {
 	return events
 }
 
-func (e *Torrent) run() {
+func (e *TorrentEventer) run() {
 	// Immediately subscribe to piece changes so we won't miss them while we
 	// check file completion and setup state for incomplete files.
 	sub := e.torrent.SubscribePieceStateChanges()
@@ -382,7 +458,7 @@ func (e *Torrent) run() {
 
 // seedWait returns a duration inversely propotional to the seed ratio itself,
 // so the closer to the seed ratio we are, the shorter the wait duration.
-func (e *Torrent) seedWait() time.Duration {
+func (e *TorrentEventer) seedWait() time.Duration {
 	percentSeedRatio := float64(e.torrent.Stats().DataBytesWritten) / float64(e.torrent.Length()) / e.seedRatio
 	if percentSeedRatio > 1 {
 		return 0

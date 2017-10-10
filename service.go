@@ -11,10 +11,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/joelanford/torrential/eventer"
-	"github.com/joelanford/torrential/internal/convert"
-	t "github.com/joelanford/torrential/internal/torrential"
-
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/pkg/errors"
@@ -24,8 +20,8 @@ import (
 
 type Service struct {
 	client       *torrent.Client
-	multiEventer *eventer.Multi
-	eventers     map[string]*eventer.Torrent
+	multiEventer *MultiEventer
+	eventers     map[string]*TorrentEventer
 	conf         *Config
 	eventerMu    sync.RWMutex
 }
@@ -48,8 +44,8 @@ func NewService(conf *Config) (*Service, error) {
 	svc := &Service{
 		client:       client,
 		conf:         conf,
-		multiEventer: eventer.NewMulti(),
-		eventers:     make(map[string]*eventer.Torrent),
+		multiEventer: newMultiEventer(),
+		eventers:     make(map[string]*TorrentEventer),
 	}
 	if svc.conf.Cache != nil {
 		specs, err := svc.conf.Cache.LoadTorrents()
@@ -65,11 +61,14 @@ func NewService(conf *Config) (*Service, error) {
 	return svc, nil
 }
 
-func (svc *Service) Torrents() []*torrent.Torrent {
-	return svc.client.Torrents()
+func (svc *Service) Torrents() (torrents []Torrent) {
+	for _, torrent := range svc.client.Torrents() {
+		torrents = append(torrents, Torrent{torrent})
+	}
+	return
 }
 
-func (svc *Service) Torrent(infoHash string) (*torrent.Torrent, error) {
+func (svc *Service) Torrent(infoHash string) (*Torrent, error) {
 	var h metainfo.Hash
 	if err := h.FromHexString(infoHash); err != nil {
 		return nil, errors.Wrap(parseErr{err}, "bad torrent hash")
@@ -78,30 +77,30 @@ func (svc *Service) Torrent(infoHash string) (*torrent.Torrent, error) {
 	if !ok {
 		return nil, notFoundErr{errors.New("torrent not found")}
 	}
-	return torrent, nil
+	return &Torrent{torrent}, nil
 }
 
-func (svc *Service) AddTorrentReader(torrentReader io.Reader) (*torrent.Torrent, error) {
-	spec, err := convert.ReaderToTorrentSpec(torrentReader)
+func (svc *Service) AddTorrentReader(torrentReader io.Reader) (*Torrent, error) {
+	mi, err := metainfo.Load(torrentReader)
 	if err != nil {
 		return nil, errors.Wrap(parseErr{err}, "could not parse spec from torrent")
 	}
-	return svc.addTorrentSpec(spec)
+	return svc.addTorrentSpec(torrent.TorrentSpecFromMetaInfo(mi))
 }
 
-func (svc *Service) AddTorrentURL(torrentURL string) (*torrent.Torrent, error) {
+func (svc *Service) AddTorrentURL(torrentURL string) (*Torrent, error) {
 	resp, err := http.Get(torrentURL)
 	if err != nil {
 		return nil, errors.Wrap(fetchErr{err}, "could not fetch torrent")
 	}
-	spec, err := convert.ReaderToTorrentSpec(resp.Body)
+	mi, err := metainfo.Load(resp.Body)
 	if err != nil {
 		return nil, errors.Wrap(parseErr{err}, "could not parse spec from torrent")
 	}
-	return svc.addTorrentSpec(spec)
+	return svc.addTorrentSpec(torrent.TorrentSpecFromMetaInfo(mi))
 }
 
-func (svc *Service) AddMagnetURI(magnetURI string) (*torrent.Torrent, error) {
+func (svc *Service) AddMagnetURI(magnetURI string) (*Torrent, error) {
 	spec, err := torrent.TorrentSpecFromMagnetURI(magnetURI)
 	if err != nil {
 		return nil, errors.Wrap(parseErr{err}, "could not parse spec from magnet URI")
@@ -109,7 +108,7 @@ func (svc *Service) AddMagnetURI(magnetURI string) (*torrent.Torrent, error) {
 	return svc.addTorrentSpec(spec)
 }
 
-func (svc *Service) Eventer(infoHash string) (*eventer.Torrent, error) {
+func (svc *Service) Eventer(infoHash string) (*TorrentEventer, error) {
 	svc.eventerMu.RLock()
 	defer svc.eventerMu.RUnlock()
 	e, ok := svc.eventers[infoHash]
@@ -119,7 +118,7 @@ func (svc *Service) Eventer(infoHash string) (*eventer.Torrent, error) {
 	return e, nil
 }
 
-func (svc *Service) MultiEventer() *eventer.Multi {
+func (svc *Service) MultiEventer() *MultiEventer {
 	return svc.multiEventer
 }
 
@@ -163,7 +162,7 @@ func (svc *Service) Drop(infoHash string, deleteFiles bool) error {
 	return nil
 }
 
-func (svc *Service) addTorrentSpec(spec *torrent.TorrentSpec) (*torrent.Torrent, error) {
+func (svc *Service) addTorrentSpec(spec *torrent.TorrentSpec) (*Torrent, error) {
 	t, new, err := svc.client.AddTorrentSpec(spec)
 	if !new {
 		return nil, existsErr{errors.New("torrent already exists")}
@@ -172,8 +171,10 @@ func (svc *Service) addTorrentSpec(spec *torrent.TorrentSpec) (*torrent.Torrent,
 		return nil, errors.Wrap(addTorrentErr{err}, "could not add torrent")
 	}
 
-	e := eventer.New(t, eventer.SeedRatio(svc.conf.SeedRatio))
-	svc.multiEventer.Add(e)
+	torrent := Torrent{t}
+
+	e := newTorrentEventer(torrent, SeedRatio(svc.conf.SeedRatio))
+	svc.multiEventer.add(e)
 
 	svc.eventerMu.Lock()
 	svc.eventers[spec.InfoHash.String()] = e
@@ -199,12 +200,12 @@ func (svc *Service) addTorrentSpec(spec *torrent.TorrentSpec) (*torrent.Torrent,
 					log.Printf("error invoking webhook %s for %s event for torrent %s: %s", svc.conf.WebhookURL, event.Type, event.Torrent.InfoHash().String(), err)
 				}
 			}
-			if event.Type == eventer.SeedingDone && svc.conf.DropWhenDone {
+			if event.Type == SeedingDone && svc.conf.DropWhenDone {
 				event.Torrent.Drop()
 			}
 		}
 	}()
-	return t, nil
+	return &torrent, nil
 }
 
 type Config struct {
@@ -215,9 +216,8 @@ type Config struct {
 	DropWhenDone bool
 }
 
-func invokeWebhook(e eventer.Event, url string) error {
-	event := convert.Event(e)
-	jsonData, err := json.Marshal(t.NewEventResult(event))
+func invokeWebhook(e Event, url string) error {
+	jsonData, err := json.Marshal(eventResult{e})
 	if err != nil {
 		return err
 	}

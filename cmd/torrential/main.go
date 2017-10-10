@@ -23,11 +23,11 @@ var (
 
 func main() {
 	flag.StringVar(&listenAddr, "listen-addr", ":8080", "Address to listen on")
-	flag.StringVar(&downloadDir, "download-dir", "torrential/downloads", "Directory in which to download torrent data")
-	flag.StringVar(&torrentsDir, "torrents-dir", "torrential/torrents", "Directory in which to cache active torrent metadata files")
+	flag.StringVar(&downloadDir, "download-dir", "torrential-data/downloads", "Directory in which to download torrent data")
+	flag.StringVar(&torrentsDir, "torrents-dir", "torrential-data/torrents", "Directory in which to cache active torrent metadata files")
 	flag.Float64Var(&seedRatio, "seed-ratio", 1.0, "Seed ratio of torrents that determines when seed ratio events and webhooks are invoked")
 	flag.BoolVar(&dropWhenDone, "drop-done", true, "Drop the torrent when the download completes (or when the seed ratio is met, if enabled)")
-	flag.StringVar(&webhookURL, "webhook-url", "http://localhost:8080/webhook", "Webhook to invoke for torrent events")
+	flag.StringVar(&webhookURL, "webhook-url", "", "Webhook to invoke for torrent events")
 	flag.StringVar(&httpBasePath, "http-basepath", "/", "Base path of torrential HTTP handler")
 
 	flag.Parse()

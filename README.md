@@ -38,9 +38,9 @@ import (
 func main() {
 	svc, err := torrential.NewService(&torrential.Config{
 		ClientConfig: &torrent.Config{
-			DataDir: "torrential/downloads",
+			DataDir: "torrential-data/downloads",
 		},
-		Cache:      cache.NewDirectory("torrential/cache"),
+		Cache:      cache.NewDirectory("torrential-data/cache"),
 		SeedRatio:  1.0,
 		WebhookURL: "http://localhost:8080/webhook",
 	})

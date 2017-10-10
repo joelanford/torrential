@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/anacrolix/torrent"
-	"github.com/joelanford/torrential/internal/convert"
+	"github.com/anacrolix/torrent/metainfo"
 	"github.com/pkg/errors"
 )
 
@@ -55,10 +55,12 @@ func (c *Directory) LoadTorrents() ([]torrent.TorrentSpec, error) {
 				return nil, err
 			}
 			defer f.Close()
-			spec, err := convert.ReaderToTorrentSpec(f)
+
+			mi, err := metainfo.Load(f)
 			if err != nil {
 				return nil, err
 			}
+			spec := torrent.TorrentSpecFromMetaInfo(mi)
 			specs = append(specs, *spec)
 		}
 	}

@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/joelanford/torrential/internal/convert"
-
 	"github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent/metainfo"
 	minio "github.com/minio/minio-go"
 	"github.com/pkg/errors"
 )
@@ -87,10 +86,11 @@ func (c *Minio) LoadTorrents() ([]torrent.TorrentSpec, error) {
 		if err != nil {
 			return nil, err
 		}
-		spec, err := convert.ReaderToTorrentSpec(obj)
+		mi, err := metainfo.Load(obj)
 		if err != nil {
 			return nil, err
 		}
+		spec := torrent.TorrentSpecFromMetaInfo(mi)
 		specs = append(specs, *spec)
 	}
 	return specs, nil

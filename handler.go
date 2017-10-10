@@ -5,13 +5,9 @@ import (
 	"io/ioutil"
 	"net/http"
 
-	"github.com/anacrolix/torrent"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
-
-	"github.com/joelanford/torrential/internal/convert"
-	t "github.com/joelanford/torrential/internal/torrential"
 )
 
 type handler struct {
@@ -116,8 +112,7 @@ func (h *handler) getTorrentsEvents(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 
 	for e := range eventer.Events(r.Context().Done()) {
-		event := convert.Event(e)
-		ws.WriteJSON(t.NewEventResult(event))
+		ws.WriteJSON(eventResult{e})
 	}
 	ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }
@@ -193,25 +188,19 @@ func (h *handler) getTorrentEvents(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close()
 
 	for e := range eventer.Events(r.Context().Done()) {
-		event := convert.Event(e)
-		ws.WriteJSON(t.NewEventResult(event))
+		ws.WriteJSON(eventResult{e})
 	}
 	ws.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 }
 
-func encodeTorrent(w http.ResponseWriter, code int, torrent *torrent.Torrent) {
-	result := convert.Torrent(torrent)
+func encodeTorrent(w http.ResponseWriter, code int, torrent *Torrent) {
 	writeHeader(w, code)
-	json.NewEncoder(w).Encode(t.NewTorrentResult(&result))
+	json.NewEncoder(w).Encode(torrentResult{torrent})
 }
 
-func encodeTorrents(w http.ResponseWriter, code int, torrents []*torrent.Torrent) {
-	results := make([]t.Torrent, 0)
-	for _, t := range torrents {
-		results = append(results, convert.Torrent(t))
-	}
+func encodeTorrents(w http.ResponseWriter, code int, torrents []Torrent) {
 	writeHeader(w, code)
-	json.NewEncoder(w).Encode(t.NewTorrentsResult(results))
+	json.NewEncoder(w).Encode(torrentsResult{torrents})
 }
 
 func encodeEmptyResult(w http.ResponseWriter, code int) {
@@ -221,7 +210,7 @@ func encodeEmptyResult(w http.ResponseWriter, code int) {
 
 func encodeError(w http.ResponseWriter, code int, err error) {
 	writeHeader(w, code)
-	json.NewEncoder(w).Encode(t.NewErrorResult(err))
+	json.NewEncoder(w).Encode(errorResult{err.Error()})
 }
 
 func writeHeader(w http.ResponseWriter, code int) {
