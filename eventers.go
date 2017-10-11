@@ -90,13 +90,15 @@ type TorrentEventer struct {
 
 	added        chan struct{}
 	gotInfo      chan struct{}
+	pieceDone    map[int]chan struct{}
 	fileDone     map[string]chan struct{}
 	downloadDone chan struct{}
 	seedingDone  chan struct{}
 	closed       chan struct{}
 
+	pdMutex    sync.RWMutex
 	fdMutex    sync.RWMutex
-	filesReady chan struct{}
+	chansReady chan struct{}
 }
 
 var _ Eventer = &TorrentEventer{}
@@ -108,17 +110,23 @@ func newTorrentEventer(t Torrent, options ...EventerOptionFunc) *TorrentEventer 
 		torrent:      t,
 		added:        make(chan struct{}),
 		gotInfo:      make(chan struct{}),
+		pieceDone:    make(map[int]chan struct{}),
 		fileDone:     make(map[string]chan struct{}),
 		downloadDone: make(chan struct{}),
 		seedingDone:  make(chan struct{}),
 		closed:       make(chan struct{}),
 
-		filesReady: make(chan struct{}),
+		chansReady: make(chan struct{}),
 	}
 	for _, opt := range options {
 		opt(&e)
 	}
+
 	go e.run()
+
+	// Wait until added is closed so that the subcription is setup before we
+	// return
+	<-e.added
 
 	return &e
 }
@@ -145,6 +153,13 @@ func (e *TorrentEventer) Added() <-chan struct{} {
 // GotInfo returns a channel that will be closed when the torrent info is ready.
 func (e *TorrentEventer) GotInfo() <-chan struct{} {
 	return e.gotInfo
+}
+
+func (e *TorrentEventer) PieceDone(index int) (<-chan struct{}, bool) {
+	e.pdMutex.RLock()
+	defer e.pdMutex.RUnlock()
+	c, ok := e.pieceDone[index]
+	return c, ok
 }
 
 // FileDone returns a channel that will be closed when the file at the given
@@ -209,8 +224,21 @@ func (e *TorrentEventer) Events(done <-chan struct{}) <-chan Event {
 		wg.Add(len(e.torrent.Files()))
 
 		select {
-		case <-e.filesReady:
+		case <-e.chansReady:
 			go func() {
+				for i := 0; i < e.torrent.NumPieces(); i++ {
+					pieceDone, _ := e.PieceDone(i)
+					go func(piece int) {
+						select {
+						case <-e.Closed():
+							return
+						case <-done:
+							return
+						case <-pieceDone:
+							events <- Event{Type: PieceDone, Torrent: e.torrent, Piece: &piece}
+						}
+					}(i)
+				}
 				for _, file := range e.torrent.Files() {
 					fileDone, _ := e.FileDone(file.Path())
 					go func(f torrent.File) {
@@ -221,6 +249,17 @@ func (e *TorrentEventer) Events(done <-chan struct{}) <-chan Event {
 						case <-done:
 							return
 						case <-fileDone:
+							pieceIndices := getPieceIndices(f)
+							var pieceWg sync.WaitGroup
+							pieceWg.Add(len(pieceIndices))
+							for _, pieceIndex := range pieceIndices {
+								go func(i int) {
+									defer pieceWg.Done()
+									pd, _ := e.PieceDone(i)
+									<-pd
+								}(pieceIndex)
+							}
+							pieceWg.Wait()
 							events <- Event{Type: FileDone, Torrent: e.torrent, File: &File{&f}}
 						}
 					}(file)
@@ -308,10 +347,16 @@ func (e *TorrentEventer) run() {
 		incompleteFilePieces[file.Path()] = make(map[int]struct{})
 	}
 
+	for i := 0; i < e.torrent.NumPieces(); i++ {
+		e.pdMutex.Lock()
+		e.pieceDone[i] = make(chan struct{})
+		e.pdMutex.Unlock()
+	}
+
 	// Now that all of the fileDone channels have been created, close the
 	// filesReady channel to initialize the processing to send FileDone events
 	// in the Events() function
-	close(e.filesReady)
+	close(e.chansReady)
 
 	// Iterate through each piece, setting up the incomplete file and piece maps
 	fileIndex := 0
@@ -320,6 +365,9 @@ func (e *TorrentEventer) run() {
 		pieceState := e.torrent.PieceState(i)
 
 		if piece.Info().Length() == 0 || pieceState.Complete {
+			e.pdMutex.RLock()
+			close(e.pieceDone[i])
+			e.pdMutex.RUnlock()
 			continue
 		}
 
@@ -363,21 +411,23 @@ func (e *TorrentEventer) run() {
 		}
 	}
 
-	// If there are no bytes missing, it means all the files and the entire
-	// torrent are done downloading, so short circuit the rest of the fileDone
-	// and downloadDone processing.
+	// If there are no bytes missing, it means all the pieces, files, and the
+	// entire torrent are done downloading, so short circuit the rest of the
+	// pieceDone, fileDone, and downloadDone processing.
 	//
 	// Otherwise, monitor the piece state changes for completed pieces.
 	if e.torrent.BytesMissing() == 0 {
-		for file, pieces := range incompleteFilePieces {
+		for piece := range incompletePieceFiles {
+			e.pdMutex.RLock()
+			close(e.pieceDone[piece])
+			e.pdMutex.RUnlock()
+			delete(incompletePieceFiles, piece)
+		}
+		for file := range incompleteFilePieces {
 			e.fdMutex.RLock()
 			close(e.fileDone[file])
 			e.fdMutex.RUnlock()
-
 			delete(incompleteFilePieces, file)
-			for p := range pieces {
-				delete(incompletePieceFiles[p], file)
-			}
 		}
 		close(e.downloadDone)
 	} else {
@@ -402,8 +452,11 @@ func (e *TorrentEventer) run() {
 			//   4. if no bytes are missing from the torrent, close the
 			//      downloadDone channel and break the loop
 			if psc.Complete {
-				files := incompletePieceFiles[psc.Index]
+				e.pdMutex.RLock()
+				close(e.pieceDone[psc.Index])
+				e.pdMutex.RUnlock()
 
+				files := incompletePieceFiles[psc.Index]
 				for f := range files {
 					delete(incompleteFilePieces[f], psc.Index)
 					if len(incompleteFilePieces[f]) == 0 {
@@ -464,4 +517,25 @@ func (e *TorrentEventer) seedWait() time.Duration {
 		return 0
 	}
 	return (time.Millisecond * time.Duration((1-percentSeedRatio)*1000.0) * 15) + time.Second
+}
+
+func getPieceIndices(file torrent.File) (pieces []int) {
+	t := file.Torrent()
+	for i := 0; i < t.NumPieces(); i++ {
+		piece := t.Piece(i)
+		pieceBegin := piece.Info().Offset()
+		pieceEnd := pieceBegin + piece.Info().Length() - 1
+
+		if file.Length() == 0 {
+			return
+		}
+
+		fileBegin := file.Offset()
+		fileEnd := fileBegin + file.Length() - 1
+
+		if pieceEnd >= fileBegin && fileEnd >= pieceBegin {
+			pieces = append(pieces, i)
+		}
+	}
+	return
 }

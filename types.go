@@ -105,6 +105,7 @@ type Event struct {
 	Type    EventType `json:"type"`
 	Torrent Torrent   `json:"torrent"`
 	File    *File     `json:"file,omitempty"`
+	Piece   *int      `json:"piece,omitempty"`
 }
 
 type EventType int
@@ -112,6 +113,7 @@ type EventType int
 const (
 	Added EventType = iota
 	GotInfo
+	PieceDone
 	FileDone
 	DownloadDone
 	SeedingDone
@@ -124,6 +126,8 @@ func (t EventType) String() string {
 		return "added"
 	case GotInfo:
 		return "gotInfo"
+	case PieceDone:
+		return "pieceDone"
 	case FileDone:
 		return "fileDone"
 	case DownloadDone:
