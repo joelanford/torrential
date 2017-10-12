@@ -11,6 +11,9 @@ type Torrent struct {
 }
 
 func (t Torrent) MarshalJSON() ([]byte, error) {
+	if t.Torrent == nil {
+		return []byte("null"), nil
+	}
 	mi := t.Metainfo()
 	torrent := struct {
 		BytesCompleted int    `json:"bytesCompleted"` // Number of bytes completed
@@ -57,10 +60,11 @@ func (t Torrent) MarshalJSON() ([]byte, error) {
 			PendingPeers:     s.PendingPeers,
 			HalfOpenPeers:    s.HalfOpenPeers,
 		}
-
-		for _, f := range t.Files() {
-			torrent.Files = append(torrent.Files, File{&f})
+		files := t.Files()
+		for i := range files {
+			torrent.Files = append(torrent.Files, File{&files[i]})
 		}
+
 	default:
 	}
 	return json.Marshal(torrent)
@@ -71,6 +75,9 @@ type File struct {
 }
 
 func (f File) MarshalJSON() ([]byte, error) {
+	if f.File == nil {
+		return []byte("null"), nil
+	}
 	return json.Marshal(struct {
 		DisplayPath string `json:"displayPath"`
 		Length      int    `json:"length"`
